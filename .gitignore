@@ -1,3 +1,8 @@
+# tg_monitor: secrets and local-only data (never commit)
+tg_monitor_session*
+posts.db
+.env
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

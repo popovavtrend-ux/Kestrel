@@ -1,0 +1,6 @@
+# One Telegram channel per line (username or t.me link).
+# Lines starting with # are ignored.
+#
+# Examples:
+# durov
+# https://t.me/telegram
