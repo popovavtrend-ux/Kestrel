@@ -14,23 +14,24 @@
     --border: #e2e2e8;
     --hover: #f3f3f6;
     --red: #e10600;
+    --ok: #15803d;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
       --bg: #121214; --fg: #ececf1; --muted: #9a9aa5;
-      --panel: #1c1c20; --border: #2f2f36; --hover: #26262c;
+      --panel: #1c1c20; --border: #2f2f36; --hover: #26262c; --ok: #4ade80;
     }
   }
   :root[data-theme="dark"] {
     --bg: #121214; --fg: #ececf1; --muted: #9a9aa5;
-    --panel: #1c1c20; --border: #2f2f36; --hover: #26262c;
+    --panel: #1c1c20; --border: #2f2f36; --hover: #26262c; --ok: #4ade80;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
     font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
   #app { display: flex; height: 100%; }
   #map { flex: 1; min-width: 0; }
-  #side { width: 320px; overflow-y: auto; background: var(--panel);
+  #side { width: 340px; overflow-y: auto; background: var(--panel);
     border-left: 1px solid var(--border); padding: 16px; }
   h1 { font-size: 18px; margin: 0 0 4px; }
   h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em;
@@ -40,13 +41,19 @@
   li.zone, li.border { padding: 6px 8px; border-radius: 6px; cursor: pointer; }
   li.zone:hover, li.border:hover { background: var(--hover); }
   li.zone { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+  li.zone .full { font-weight: 400; color: var(--muted); }
   .sw { width: 14px; height: 14px; border-radius: 3px; flex: none; }
   li.border { font-size: 13px; }
-  li.border .between { color: var(--muted); font-size: 12px; }
+  li.border .between, li.border .why { color: var(--muted); font-size: 12px; }
+  li.border .snap { font-size: 11px; color: var(--muted); }
+  li.border .snap.ok { color: var(--ok); }
   .line { display: inline-block; width: 22px; height: 0; border-top: 4px solid var(--red);
     vertical-align: middle; margin-right: 6px; }
   .line.dash { border-top-style: dashed; }
   label.toggle { display: flex; gap: 8px; align-items: center; margin: 4px 0; cursor: pointer; }
+  button { font: inherit; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--hover); color: var(--fg); cursor: pointer; }
+  #status { font-size: 13px; margin: 8px 0; padding: 8px; border-radius: 6px; background: var(--hover); }
   .zlabel { background: none; border: none; box-shadow: none;
     font: 800 20px/1 system-ui, sans-serif; color: #c2007a;
     text-shadow: 0 0 3px #fff, 0 0 3px #fff, 0 0 3px #fff; white-space: nowrap; }
@@ -66,10 +73,13 @@
   <div id="map"></div>
   <aside id="side">
     <h1>Зоны Петербурга</h1>
-    <p class="note">Границы зон проведены по улицам, рекам и набережным.
-      Наведите курсор на красную линию, чтобы увидеть название улицы, или нажмите на зону.</p>
-    <p class="note"><span class="line"></span>граница по улице / набережной<br>
-      <span class="line dash"></span>внешняя граница (ориентировочно)</p>
+    <p class="note">Границы зон проведены по улицам, рекам, железной дороге и КАД — там,
+      где их неудобно пересекать. Наведите курсор на красную линию или нажмите на зону.</p>
+    <p class="note"><span class="line"></span>граница по улице / реке / ж/д<br>
+      <span class="line dash"></span>внешняя граница с пригородом (ориентировочно)</p>
+
+    <div id="status">Загружаю геометрию улиц из OpenStreetMap…</div>
+    <button id="refetch" type="button">Привязать к улицам заново</button>
 
     <label class="toggle"><input type="checkbox" id="tFill" checked> Заливка зон</label>
     <label class="toggle"><input type="checkbox" id="tLabels" checked> Подписи зон</label>
@@ -90,7 +100,8 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script>
 // ---------------------------------------------------------------------------
-// Узловые точки, в которых сходятся несколько границ.
+// Узловые точки, в которых сходятся несколько границ (приблизительные —
+// при загрузке притягиваются к реальным улицам из OpenStreetMap).
 // ---------------------------------------------------------------------------
 const P = {
   NEVKA_MOUTH: [59.9810, 30.2230], // устье Большой Невки
@@ -113,122 +124,190 @@ const P = {
   BALT_W:      [59.8590, 30.1050], // западный край Балтийского бульвара
   BALT_E:      [59.8665, 30.1700], // восточный край Балтийского бульвара
   NORTH_WEST:  [60.1400, 30.2480], // Выборгское ш. у Сертолово
-  OLGINO:      [59.9990, 30.1300]  // берег залива, Ольгино
+  KL_SOUTH:    [59.9950, 30.1550], // Приморское ш. × ул. 3-я Конная Лахта
+  KL_NORTH:    [60.0300, 30.1550]  // северный конец ул. 3-я Конная Лахта
 };
 
+// Селекторы OpenStreetMap: улица/река по имени, ж/д, КАД, береговая линия.
+const road  = name => ({ highway: true, name });
+const river = name => ({ waterway: true, name });
+const RAIL  = { railway: "rail" };
+const KAD   = { highway: true, name: /Кольцевая автомобильная дорога/ };
+const COAST = { natural: "coastline" };
+
 // ---------------------------------------------------------------------------
-// Границы. Каждая — линия по конкретной улице / реке.
-// outer: true — внешняя граница с пригородом (проведена ориентировочно).
+// Границы. pts — приблизительная линия (запасной вариант без интернета),
+// src — что искать в OSM, buf — в каком радиусе (м) искать.
+// outer: true — внешняя граница с пригородом.
 // ---------------------------------------------------------------------------
 const BORDERS = {
   nevka_w: {
     name: "Большая Невка (Приморский пр. / Ушаковская наб.)",
-    between: ["1С", "Центр"],
+    why: "Река: переезд только по мостам",
+    between: ["ЛС", "Центр"],
+    src: [river("Большая Невка")], buf: 600,
     pts: [P.NEVKA_MOUTH, [59.9850, 30.2450], [59.9870, 30.2650], [59.9860, 30.2850],
           [59.9840, 30.2990], [59.9820, 30.3100], P.KANT_BR]
   },
   nevka_e: {
     name: "Большая Невка (Петроградская / Пироговская наб.)",
+    why: "Река: Петроградка отделена от Выборгской стороны мостами",
     between: ["Центр", "ПР-Ц"],
+    src: [river("Большая Невка")], buf: 500,
     pts: [P.KANT_BR, [59.9740, 30.3240], [59.9680, 30.3290], [59.9625, 30.3340],
           [59.9580, 30.3375], P.NEVA_FORK]
   },
   neva_center: {
-    name: "Нева (Троицкий — Дворцовый мост) → Дворцовый пр.",
+    name: "Нева (Троицкий — Дворцовый мост) → Дворцовый проезд",
+    why: "Нева: разводные мосты",
     between: ["Центр", "ПР-Ц"],
+    src: [river("Нева"), road("Дворцовый проезд")], buf: 400,
     pts: [P.NEVA_FORK, [59.9500, 30.3330], [59.9485, 30.3275], [59.9455, 30.3200],
           [59.9425, 30.3120], [59.9410, 30.3085], [59.9385, 30.3085], P.ADMIRALTY]
   },
   gorokhovaya: {
     name: "ул. Гороховая → Сенная пл. → Московский пр.",
+    why: "Луч от Адмиралтейства, продолжается Московским пр. на юг",
     between: ["Центр", "ПР-Ц"],
+    src: [road("Гороховая улица"), road("Московский проспект")], buf: 250,
     pts: [P.ADMIRALTY, [59.9330, 30.3148], [59.9300, 30.3195], [59.9275, 30.3200],
           [59.9240, 30.3192], [59.9222, 30.3190], [59.9165, 30.3185], P.OBV_MOSK]
   },
   obvodny_w: {
     name: "Обводный канал → р. Екатерингофка",
+    why: "Канал и ж/д пути вдоль него: мало переездов",
     between: ["Центр", "ЛЮ"],
+    src: [river("Обводный канал"), river("Екатерингофка")], buf: 450,
     pts: [P.OBV_WEST, [59.9068, 30.2520], [59.9055, 30.2650], [59.9060, 30.2760],
           [59.9085, 30.2860], [59.9095, 30.2960], [59.9100, 30.3050], P.OBV_MOSK]
   },
   obvodny_e: {
     name: "Обводный канал",
+    why: "Канал и ж/д пути вдоль него: мало переездов",
     between: ["ПР-Ц", "ПЮ"],
+    src: [river("Обводный канал")], buf: 450,
     pts: [P.OBV_MOSK, [59.9125, 30.3350], [59.9135, 30.3480], [59.9150, 30.3580],
           [59.9170, 30.3720], [59.9178, 30.3850], P.OBV_EAST]
   },
   moskovsky: {
     name: "Московский пр. → Пулковское ш.",
+    why: "Главная южная магистраль, между Варшавской и Витебской ж/д",
     between: ["ЛЮ", "ПЮ"],
+    src: [road("Московский проспект"), road("Пулковское шоссе")], buf: 400,
     pts: [P.OBV_MOSK, [59.9063, 30.3175], [59.8918, 30.3176], [59.8790, 30.3189],
           [59.8665, 30.3215], [59.8519, 30.3219], [59.8418, 30.3219], [59.8300, 30.3226],
           P.KAD_PULKOVO]
   },
   kantemirovskaya: {
     name: "Кантемировская ул.",
-    between: ["1С", "ПР-Ц"],
+    why: "Съезд с Кантемировского моста",
+    between: ["ЛС", "ПР-Ц"],
+    src: [road("Кантемировская улица")], buf: 400,
     pts: [P.KANT_BR, [59.9815, 30.3270], P.KANT_SAMPS]
   },
   kushelevka: {
     name: "Кантемировская ул. → Кушелевская дорога → пр. Непокорённых",
+    why: "Вдоль Кушелевской дороги идёт ж/д: переезды редкие",
     between: ["ЦС", "ПР-Ц"],
+    src: [road("Кантемировская улица"), road("Кушелевская дорога"), road("проспект Непокорённых")],
+    buf: 450,
     pts: [P.KANT_SAMPS, [59.9849, 30.3442], [59.9875, 30.3600], [59.9905, 30.3760],
           [59.9925, 30.3880], [59.9935, 30.4040], P.NEP_PISK]
   },
   engelsa: {
     name: "Б. Сампсониевский пр. → пр. Энгельса → Выборгское ш.",
-    between: ["1С", "ЦС"],
+    why: "Рядом выборгская ж/д: Приморский р-н и Выборгская сторона связаны редкими переездами",
+    between: ["ЛС", "ЦС"],
+    src: [road("Большой Сампсониевский проспект"), road("проспект Энгельса"), road("Выборгское шоссе")],
+    buf: 600,
     pts: [P.KANT_SAMPS, [59.9900, 30.3330], [60.0000, 30.3260], [60.0167, 30.3155],
           [60.0270, 30.3190], [60.0372, 30.3214], [60.0515, 30.3325], [60.0650, 30.3290],
           [60.0800, 30.3000], [60.1000, 30.2750], [60.1200, 30.2600], P.NORTH_WEST]
   },
   piskarevsky: {
     name: "Пискарёвский пр.",
+    why: "Вдоль проспекта — ж/д Финляндский вокзал — Пискарёвка",
     between: ["ПР-Ц", "Ручьи"],
+    src: [road("Пискарёвский проспект")], buf: 500,
     pts: [P.NEP_PISK, [59.9850, 30.4175], [59.9750, 30.4150], [59.9660, 30.4115],
           [59.9575, 30.4085], P.PISK_NEVA]
   },
   neva_okhta: {
     name: "Нева (Смольный — мост Александра Невского)",
+    why: "Нева: разводные мосты",
     between: ["ПР-Ц", "Ручьи"],
+    src: [river("Нева")], buf: 600,
     pts: [P.PISK_NEVA, [59.9440, 30.4035], [59.9350, 30.4010], P.AN_BRIDGE]
   },
   neva_lavra: {
     name: "Нева (у Александро-Невской лавры)",
+    why: "Нева: разводные мосты",
     between: ["ПР-Ц", "ПС"],
+    src: [river("Нева")], buf: 600,
     pts: [P.AN_BRIDGE, P.OBV_EAST]
   },
   railway: {
-    name: "ж/д линия Пискарёвка — Ручьи — Девяткино",
+    name: "ж/д Пискарёвка — Ручьи — Девяткино",
+    why: "Железная дорога: переезды только у станций",
     between: ["ЦС", "Ручьи"],
+    src: [RAIL], buf: 400,
     pts: [P.DEVYATKINO, [60.0320, 30.4330], [60.0060, 30.4280], P.NEP_PISK]
   },
   zanevsky: {
     name: "Заневский пр. → пр. Косыгина → Рябовское ш.",
+    why: "Продолжение Невского через мост Ал. Невского — главная ось правого берега",
     between: ["Ручьи", "ПС"],
+    src: [road("Заневский проспект"), road("проспект Косыгина"), road("Рябовское шоссе")], buf: 500,
     pts: [P.AN_BRIDGE, [59.9270, 30.4060], [59.9295, 30.4200], [59.9315, 30.4320],
           [59.9325, 30.4400], [59.9390, 30.4540], [59.9450, 30.4660], [59.9490, 30.4750],
           [59.9530, 30.4950], [59.9565, 30.5200], [59.9600, 30.5500], P.RYAB_EAST]
   },
   neva_south: {
     name: "Нева (Октябрьская наб. — Обуховский мост)",
+    why: "Нева: мостов мало (Володарский, Обуховский)",
     between: ["ПЮ", "ПС"],
+    src: [river("Нева")], buf: 700,
     pts: [P.OBV_EAST, [59.9080, 30.4120], [59.8960, 30.4280], [59.8790, 30.4530],
           [59.8660, 30.4700], P.OBUKH_BR]
   },
+  primorsky: {
+    name: "Приморский пр. → Приморское ш. (Лахта)",
+    why: "Береговая магистраль Лахты",
+    between: ["ЛС", "залив"],
+    src: [road("Приморский проспект"), road("Приморское шоссе")], buf: 900,
+    pts: [P.NEVKA_MOUTH, [59.9870, 30.2050], [59.9900, 30.1850], P.KL_SOUTH]
+  },
+  konnaya_lakhta: {
+    name: "ул. 3-я Конная Лахта",
+    why: "Западная граница левого севера",
+    between: ["ЛС", "Северный пригород"],
+    src: [road(/3-я Конная Лахта/)], buf: 2500,
+    pts: [P.KL_SOUTH, [60.0120, 30.1550], P.KL_NORTH]
+  },
+  baltiysky: {
+    name: "Балтийский бульвар (пр. Героев и Балтийская жемчужина внутри зоны)",
+    why: "Крайняя улица у залива",
+    between: ["ЛЮ", "залив"],
+    src: [road("Балтийский бульвар")], buf: 1500,
+    pts: [P.BALT_W, [59.8635, 30.1150], [59.8660, 30.1300], [59.8670, 30.1450],
+          [59.8668, 30.1600], P.BALT_E]
+  },
 
-  // ---- внешние границы (с пригородами), ориентировочно ----
+  // ---- внешние границы с пригородами ----
   out_neva_novosar: {
     name: "Нева до Новосаратовки", outer: true, between: ["ПС", "Правый пригород"],
+    src: [river("Нева")], buf: 700,
     pts: [P.OBUKH_BR, [59.8480, 30.5120], P.NOVOSAR]
   },
   out_kad_e: {
     name: "КАД (Пулковское ш. — Обуховский мост)", outer: true, between: ["ПЮ", "Правый пригород"],
+    src: [KAD], buf: 1500,
     pts: [P.KAD_PULKOVO, [59.8150, 30.3600], [59.8180, 30.3950], [59.8300, 30.4300],
           [59.8420, 30.4650], P.OBUKH_BR]
   },
   out_kad_w: {
     name: "КАД (Пулковское ш. — Петергофское ш.)", outer: true, between: ["ЛЮ", "Левый пригород"],
+    src: [KAD], buf: 1500,
     pts: [P.KAD_PULKOVO, [59.8160, 30.2900], [59.8130, 30.2500], [59.8160, 30.2100],
           [59.8250, 30.1700], [59.8350, 30.1300], P.KAD_PETERG]
   },
@@ -236,29 +315,27 @@ const BORDERS = {
     name: "От КАД к Балтийскому бульвару", outer: true, between: ["ЛЮ", "Левый пригород"],
     pts: [P.KAD_PETERG, [59.8520, 30.0950], P.BALT_W]
   },
-  baltiysky: {
-    name: "Балтийский бульвар (пр. Героев и Балтийская жемчужина внутри зоны)",
-    between: ["ЛЮ", "залив"],
-    pts: [P.BALT_W, [59.8635, 30.1150], [59.8660, 30.1300], [59.8670, 30.1450],
-          [59.8668, 30.1600], P.BALT_E]
-  },
   out_coast_s: {
     name: "Берег Финского залива (юг)", outer: true, between: ["ЛЮ", "залив"],
-    pts: [P.BALT_E, [59.8720, 30.2000], [59.8800, 30.2150], [59.8980, 30.2150], [59.9040, 30.2350], P.OBV_WEST]
+    src: [COAST], buf: 1200,
+    pts: [P.BALT_E, [59.8720, 30.2000], [59.8800, 30.2150], [59.8980, 30.2150],
+          [59.9040, 30.2350], P.OBV_WEST]
   },
   out_coast_c: {
-    name: "Берег Финского залива (Васильевский о-в, Крестовский о-в)", outer: true, between: ["Центр", "залив"],
+    name: "Берег Финского залива (Васильевский о-в, Крестовский о-в)", outer: true,
+    between: ["Центр", "залив"],
+    src: [COAST], buf: 1200,
     pts: [P.OBV_WEST, [59.9150, 30.2350], [59.9300, 30.2200], [59.9450, 30.2060],
           [59.9600, 30.2100], [59.9720, 30.2120], P.NEVKA_MOUTH]
   },
-  out_1s: {
-    name: "Берег залива (Лахта — Ольгино) и граница с Сев. пригородом", outer: true,
-    between: ["1С", "Северный пригород"],
-    pts: [P.NEVKA_MOUTH, [59.9890, 30.1900], P.OLGINO, [60.0350, 30.1500],
-          [60.0800, 30.1700], [60.1150, 30.1900], [60.1380, 30.2150], P.NORTH_WEST]
+  out_ls: {
+    name: "Граница с Северным пригородом (Конная Лахта — Сертолово)", outer: true,
+    between: ["ЛС", "Северный пригород"],
+    pts: [P.KL_NORTH, [60.0600, 30.1650], [60.0900, 30.1800], [60.1150, 30.1950],
+          [60.1380, 30.2150], P.NORTH_WEST]
   },
   out_cs: {
-    name: "Граница с Сев. пригородом (Токсовское ш. — Кузьмоловский)", outer: true,
+    name: "Граница с Северным пригородом (Песочный — Кузьмоловский)", outer: true,
     between: ["ЦС", "Северный пригород"],
     pts: [P.NORTH_WEST, [60.1480, 30.2800], [60.1520, 30.3500], [60.1500, 30.4300],
           [60.1350, 30.4950], [60.1100, 30.4900], [60.0850, 30.4740], [60.0650, 30.4560],
@@ -282,22 +359,22 @@ const BORDERS = {
 // Зоны: замкнутый контур собирается из границ (знак "-" — в обратную сторону).
 // ---------------------------------------------------------------------------
 const ZONES = [
-  { id: "1С",    color: "#3b82f6", at: [60.0450, 30.2300],
-    ring: ["nevka_w", "kantemirovskaya", "engelsa", "-out_1s"] },
-  { id: "ЦС",    color: "#10b981", at: [60.0650, 30.3850],
+  { id: "ЛС",    full: "левый север",  color: "#3b82f6", at: [60.0450, 30.2300],
+    ring: ["nevka_w", "kantemirovskaya", "engelsa", "-out_ls", "-konnaya_lakhta", "-primorsky"] },
+  { id: "ЦС",    full: "центральный север", color: "#10b981", at: [60.0650, 30.3850],
     ring: ["kushelevka", "-railway", "-out_cs", "-engelsa"] },
-  { id: "Центр", color: "#f59e0b", at: [59.9480, 30.2650],
+  { id: "Центр", full: "",             color: "#f59e0b", at: [59.9480, 30.2650],
     ring: ["nevka_w", "nevka_e", "neva_center", "gorokhovaya", "-obvodny_w", "out_coast_c"] },
-  { id: "ПР-Ц",  color: "#8b5cf6", at: [59.9560, 30.3720],
+  { id: "ПР-Ц",  full: "",             color: "#8b5cf6", at: [59.9560, 30.3720],
     ring: ["nevka_e", "neva_center", "gorokhovaya", "obvodny_e", "-neva_lavra",
            "-neva_okhta", "-piskarevsky", "-kushelevka", "-kantemirovskaya"] },
-  { id: "Ручьи", color: "#ec4899", at: [60.0050, 30.5250],
+  { id: "Ручьи", full: "",             color: "#ec4899", at: [60.0050, 30.5250],
     ring: ["piskarevsky", "neva_okhta", "zanevsky", "-out_ruchyi", "railway"] },
-  { id: "ПС",    color: "#06b6d4", at: [59.9050, 30.5050],
+  { id: "ПС",    full: "",             color: "#06b6d4", at: [59.9050, 30.5050],
     ring: ["neva_lavra", "neva_south", "out_neva_novosar", "-out_ps", "-zanevsky"] },
-  { id: "ПЮ",    color: "#ef4444", at: [59.8600, 30.3900],
+  { id: "ПЮ",    full: "правый юг",    color: "#ef4444", at: [59.8600, 30.3900],
     ring: ["moskovsky", "out_kad_e", "-neva_south", "-obvodny_e"] },
-  { id: "ЛЮ",    color: "#84cc16", at: [59.8600, 30.2300],
+  { id: "ЛЮ",    full: "левый юг",     color: "#84cc16", at: [59.8600, 30.2300],
     ring: ["obvodny_w", "moskovsky", "out_kad_w", "out_west", "baltiysky", "out_coast_s"] }
 ];
 
@@ -308,11 +385,16 @@ const SUBURBS = [
 ];
 
 // ---------------------------------------------------------------------------
+// Карта
+// ---------------------------------------------------------------------------
 const map = L.map("map", { zoomControl: true }).setView([59.96, 30.36], 11);
 L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
   maxZoom: 19,
   attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
 }).addTo(map);
+
+const ORIGINAL = JSON.stringify({ P, B: Object.fromEntries(
+  Object.entries(BORDERS).map(([k, b]) => [k, b.pts])) });
 
 function buildRing(parts) {
   const ring = [];
@@ -337,7 +419,7 @@ for (const z of ZONES) {
     .filter(b => !b.outer).map(b => "• " + b.name).join("<br>");
   const poly = L.polygon(buildRing(z.ring), {
     stroke: false, fillColor: z.color, fillOpacity: 0.18
-  }).bindPopup(`<b>Зона ${z.id}</b><br><br>Границы по улицам:<br>${streets}`);
+  }).bindPopup(`<b>Зона ${z.id}</b>${z.full ? " (" + z.full + ")" : ""}<br><br>Границы:<br>${streets}`);
   poly.on("mouseover", () => poly.setStyle({ fillOpacity: 0.32 }));
   poly.on("mouseout",  () => poly.setStyle({ fillOpacity: 0.18 }));
   poly.addTo(fillLayer);
@@ -349,7 +431,8 @@ for (const z of ZONES) {
 
   const li = document.createElement("li");
   li.className = "zone";
-  li.innerHTML = `<span class="sw" style="background:${z.color}"></span>${z.id}`;
+  li.innerHTML = `<span class="sw" style="background:${z.color}"></span>${z.id}` +
+    (z.full ? ` <span class="full">— ${z.full}</span>` : "");
   li.onclick = () => { map.fitBounds(poly.getBounds(), { padding: [20, 20] }); poly.openPopup(); };
   zoneList.appendChild(li);
 }
@@ -360,29 +443,42 @@ for (const s of SUBURBS) {
   }) }).addTo(labelLayer);
 }
 
+const lineLayers = {};
+const snapMarks = {};
 const borderList = document.getElementById("borderList");
 for (const [key, b] of Object.entries(BORDERS)) {
   const line = L.polyline(b.pts, {
     color: "#e10600", weight: b.outer ? 3 : 5, opacity: 0.95,
     dashArray: b.outer ? "8 7" : null, lineJoin: "round"
-  }).bindTooltip(`<b>${b.name}</b><br>${b.between.join(" | ")}`, { sticky: true });
+  }).bindTooltip(`<b>${b.name}</b><br>${b.between.join(" | ")}` +
+    (b.why ? `<br><i>${b.why}</i>` : ""), { sticky: true });
   line.on("mouseover", () => line.setStyle({ weight: b.outer ? 5 : 8 }));
   line.on("mouseout",  () => line.setStyle({ weight: b.outer ? 3 : 5 }));
   line.addTo(b.outer ? outerLayer : innerLayer);
+  lineLayers[key] = line;
 
   if (!b.outer) {
     const li = document.createElement("li");
     li.className = "border";
-    li.innerHTML = `<span class="line"></span>${b.name}<br><span class="between">${b.between.join(" | ")}</span>`;
+    li.innerHTML = `<span class="line"></span>${b.name}<br>` +
+      `<span class="between">${b.between.join(" | ")}</span>` +
+      (b.why ? `<br><span class="why">${b.why}</span>` : "") +
+      `<br><span class="snap">приблизительно</span>`;
     li.onclick = () => { map.fitBounds(line.getBounds(), { padding: [40, 40] }); line.openTooltip(); };
     borderList.appendChild(li);
+    snapMarks[key] = li.querySelector(".snap");
   }
+}
+
+function redraw() {
+  for (const [key, b] of Object.entries(BORDERS)) lineLayers[key].setLatLngs(b.pts);
+  for (const z of ZONES) zoneLayers[z.id].setLatLngs(buildRing(z.ring));
 }
 
 function toggle(id, layer) {
   document.getElementById(id).addEventListener("change", e => {
     e.target.checked ? layer.addTo(map) : map.removeLayer(layer);
-    innerLayer.bringToFront && innerLayer.eachLayer(l => l.bringToFront());
+    innerLayer.eachLayer(l => l.bringToFront());
   });
 }
 toggle("tFill", fillLayer);
@@ -393,6 +489,208 @@ map.on("click", e => {
   document.getElementById("coords").textContent =
     e.latlng.lat.toFixed(5) + ", " + e.latlng.lng.toFixed(5);
 });
+
+// ---------------------------------------------------------------------------
+// Привязка к реальным улицам: загружаем геометрию из OpenStreetMap (Overpass)
+// и притягиваем каждую линию к своей улице / реке / ж/д.
+// ---------------------------------------------------------------------------
+const OVERPASS = [
+  "https://overpass-api.de/api/interpreter",
+  "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+  "https://overpass.kumi.systems/api/interpreter"
+];
+const CACHE_KEY = "spbZones:snap:v1";
+const LAT0 = 59.95, KX = 111320 * Math.cos(LAT0 * Math.PI / 180), KY = 110540;
+const toXY = ([lat, lng]) => [(lng - 30.3) * KX, (lat - LAT0) * KY];
+const toLL = ([x, y]) => [y / KY + LAT0, x / KX + 30.3];
+
+function bboxOf(pts, padM) {
+  const lats = pts.map(p => p[0]), lngs = pts.map(p => p[1]);
+  const dLat = padM / KY, dLng = padM / KX;
+  return [Math.min(...lats) - dLat, Math.min(...lngs) - dLng,
+          Math.max(...lats) + dLat, Math.max(...lngs) + dLng];
+}
+
+function selToOverpass(sel) {
+  return Object.entries(sel).map(([k, v]) =>
+    v === true ? `["${k}"]` :
+    v instanceof RegExp ? `["${k}"~"${v.source}"]` : `["${k}"="${v}"]`).join("");
+}
+
+function tagsMatch(tags, sel) {
+  return Object.entries(sel).every(([k, v]) =>
+    tags[k] !== undefined && (v === true || (v instanceof RegExp ? v.test(tags[k]) : tags[k] === v)));
+}
+
+function buildQuery() {
+  const parts = [];
+  for (const b of Object.values(BORDERS)) {
+    if (!b.src) continue;
+    const bb = bboxOf(b.pts, b.buf + 300).map(n => n.toFixed(5)).join(",");
+    for (const sel of b.src) parts.push(`way${selToOverpass(sel)}(${bb});`);
+  }
+  return `[out:json][timeout:90];(${parts.join("")});out tags geom;`;
+}
+
+async function fetchOverpass(query) {
+  let lastErr;
+  for (const url of OVERPASS) {
+    try {
+      const r = await fetch(url, { method: "POST", body: "data=" + encodeURIComponent(query),
+        headers: { "Content-Type": "application/x-www-form-urlencoded" } });
+      if (!r.ok) throw new Error(url + " → " + r.status);
+      return await r.json();
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr;
+}
+
+// Отрезки найденных объектов OSM для границы (в метрах).
+function candidateSegments(b, ways) {
+  const segs = [];
+  const bb = bboxOf(b.pts, b.buf + 300);
+  for (const w of ways) {
+    if (!w.geometry || !b.src.some(sel => tagsMatch(w.tags || {}, sel))) continue;
+    const g = w.geometry;
+    for (let i = 1; i < g.length; i++) {
+      const a = [g[i - 1].lat, g[i - 1].lon], c = [g[i].lat, g[i].lon];
+      if ((a[0] < bb[0] && c[0] < bb[0]) || (a[0] > bb[2] && c[0] > bb[2]) ||
+          (a[1] < bb[1] && c[1] < bb[1]) || (a[1] > bb[3] && c[1] > bb[3])) continue;
+      segs.push([toXY(a), toXY(c)]);
+    }
+  }
+  return segs;
+}
+
+function nearestOnSegs(p, segs) {
+  let best = null, bestD = Infinity;
+  for (const [a, c] of segs) {
+    const dx = c[0] - a[0], dy = c[1] - a[1];
+    const len2 = dx * dx + dy * dy;
+    let t = len2 ? ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2 : 0;
+    t = Math.max(0, Math.min(1, t));
+    const q = [a[0] + t * dx, a[1] + t * dy];
+    const d = Math.hypot(q[0] - p[0], q[1] - p[1]);
+    if (d < bestD) { bestD = d; best = q; }
+  }
+  return [best, bestD];
+}
+
+function densify(pts, stepM) {
+  const out = [pts[0]];
+  for (let i = 1; i < pts.length; i++) {
+    const a = toXY(pts[i - 1]), c = toXY(pts[i]);
+    const n = Math.max(1, Math.ceil(Math.hypot(c[0] - a[0], c[1] - a[1]) / stepM));
+    for (let k = 1; k <= n; k++) {
+      out.push(k === n ? pts[i] : toLL([a[0] + (c[0] - a[0]) * k / n, a[1] + (c[1] - a[1]) * k / n]));
+    }
+  }
+  return out;
+}
+
+function snapAll(ways) {
+  const segsBy = {};
+  for (const [key, b] of Object.entries(BORDERS)) {
+    if (b.src) segsBy[key] = candidateSegments(b, ways);
+  }
+  // 1. Узлы: к ближайшей точке улиц, которые в них сходятся.
+  for (const node of Object.values(P)) {
+    const segs = Object.entries(BORDERS)
+      .filter(([k, b]) => segsBy[k] && (b.pts[0] === node || b.pts[b.pts.length - 1] === node))
+      .flatMap(([k]) => segsBy[k]);
+    if (!segs.length) continue;
+    const [q, d] = nearestOnSegs(toXY(node), segs);
+    if (q && d < 500) { const ll = toLL(q); node[0] = ll[0]; node[1] = ll[1]; }
+  }
+  // 2. Линии: уплотняем и притягиваем каждую точку к своей улице.
+  const result = {};
+  for (const [key, b] of Object.entries(BORDERS)) {
+    const segs = segsBy[key];
+    if (!segs || !segs.length) { result[key] = false; continue; }
+    const first = b.pts[0], last = b.pts[b.pts.length - 1];
+    const dense = densify(b.pts, 60);
+    let snapped = 0;
+    const out = dense.map((p, i) => {
+      if (i === 0 || i === dense.length - 1) return p;
+      const [q, d] = nearestOnSegs(toXY(p), segs);
+      if (q && d <= b.buf) { snapped++; return toLL(q); }
+      return p;
+    });
+    out[0] = first; out[out.length - 1] = last;
+    b.pts = out.filter((p, i) => i === 0 ||
+      Math.abs(p[0] - out[i - 1][0]) + Math.abs(p[1] - out[i - 1][1]) > 1e-6);
+    result[key] = snapped / Math.max(1, dense.length - 2) > 0.5;
+  }
+  return result;
+}
+
+function showResult(result, fromCache) {
+  const keys = Object.keys(result).filter(k => !BORDERS[k].outer);
+  const ok = keys.filter(k => result[k]).length;
+  for (const k of keys) {
+    const el = snapMarks[k];
+    if (!el) continue;
+    el.textContent = result[k] ? "✓ привязано к OSM" : "приблизительно (в OSM не найдено)";
+    el.classList.toggle("ok", !!result[k]);
+  }
+  document.getElementById("status").textContent =
+    `Линии привязаны к улицам OpenStreetMap: ${ok} из ${keys.length} внутренних границ` +
+    (fromCache ? " (из кэша)." : ".");
+}
+
+function restoreOriginal() {
+  const o = JSON.parse(ORIGINAL);
+  const nodeKeys = Object.keys(P);
+  for (const [k, b] of Object.entries(BORDERS)) {
+    const orig = o.B[k];
+    // концы линий — общие узлы P (тот же массив), остальное — исходные точки
+    const startNode = nodeKeys.find(n => o.P[n][0] === orig[0][0] && o.P[n][1] === orig[0][1]);
+    const endNode = nodeKeys.find(n => o.P[n][0] === orig[orig.length - 1][0] &&
+                                       o.P[n][1] === orig[orig.length - 1][1]);
+    b.pts = orig.map((p, i) => i === 0 && startNode ? P[startNode]
+      : i === orig.length - 1 && endNode ? P[endNode] : p);
+  }
+  for (const k of nodeKeys) { P[k][0] = o.P[k][0]; P[k][1] = o.P[k][1]; }
+}
+
+async function snapToOsm(force) {
+  const status = document.getElementById("status");
+  if (!force) {
+    try {
+      const c = JSON.parse(localStorage.getItem(CACHE_KEY) || "null");
+      if (c && c.original === ORIGINAL) {
+        for (const k of Object.keys(P)) { P[k][0] = c.P[k][0]; P[k][1] = c.P[k][1]; }
+        for (const [k, pts] of Object.entries(c.B)) {
+          const b = BORDERS[k], first = b.pts[0], last = b.pts[b.pts.length - 1];
+          b.pts = pts.map((p, i) => i === 0 ? first : i === pts.length - 1 ? last : p);
+        }
+        redraw(); showResult(c.result, true);
+        return;
+      }
+    } catch (e) { /* кэш недоступен — загрузим заново */ }
+  }
+  restoreOriginal();
+  redraw();
+  status.textContent = "Загружаю геометрию улиц из OpenStreetMap… (10–30 с)";
+  try {
+    const data = await fetchOverpass(buildQuery());
+    const result = snapAll(data.elements || []);
+    redraw();
+    showResult(result, false);
+    try {
+      localStorage.setItem(CACHE_KEY, JSON.stringify({
+        original: ORIGINAL, P, result,
+        B: Object.fromEntries(Object.entries(BORDERS).map(([k, b]) => [k, b.pts]))
+      }));
+    } catch (e) { /* без кэша тоже работает */ }
+  } catch (e) {
+    status.textContent = "Не удалось загрузить OpenStreetMap — показаны приблизительные линии. " +
+      "Нажмите «Привязать к улицам заново», когда будет интернет.";
+  }
+}
+
+document.getElementById("refetch").addEventListener("click", () => snapToOsm(true));
+snapToOsm(false);
 </script>
 </body>
 </html>
