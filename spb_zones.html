@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Зоны Петербурга</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #1b1b1f;
+    --muted: #6b6b75;
+    --panel: #ffffff;
+    --border: #e2e2e8;
+    --hover: #f3f3f6;
+    --red: #e10600;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #121214; --fg: #ececf1; --muted: #9a9aa5;
+      --panel: #1c1c20; --border: #2f2f36; --hover: #26262c;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #121214; --fg: #ececf1; --muted: #9a9aa5;
+    --panel: #1c1c20; --border: #2f2f36; --hover: #26262c;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+    font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  #app { display: flex; height: 100%; }
+  #map { flex: 1; min-width: 0; }
+  #side { width: 320px; overflow-y: auto; background: var(--panel);
+    border-left: 1px solid var(--border); padding: 16px; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em;
+    color: var(--muted); margin: 18px 0 6px; }
+  p.note { color: var(--muted); margin: 0 0 8px; font-size: 13px; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li.zone, li.border { padding: 6px 8px; border-radius: 6px; cursor: pointer; }
+  li.zone:hover, li.border:hover { background: var(--hover); }
+  li.zone { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+  .sw { width: 14px; height: 14px; border-radius: 3px; flex: none; }
+  li.border { font-size: 13px; }
+  li.border .between { color: var(--muted); font-size: 12px; }
+  .line { display: inline-block; width: 22px; height: 0; border-top: 4px solid var(--red);
+    vertical-align: middle; margin-right: 6px; }
+  .line.dash { border-top-style: dashed; }
+  label.toggle { display: flex; gap: 8px; align-items: center; margin: 4px 0; cursor: pointer; }
+  .zlabel { background: none; border: none; box-shadow: none;
+    font: 800 20px/1 system-ui, sans-serif; color: #c2007a;
+    text-shadow: 0 0 3px #fff, 0 0 3px #fff, 0 0 3px #fff; white-space: nowrap; }
+  .slabel { background: none; border: none; box-shadow: none;
+    font: 700 14px/1.1 system-ui, sans-serif; color: #c2007a;
+    text-shadow: 0 0 3px #fff, 0 0 3px #fff; white-space: nowrap; }
+  #coords { font-family: ui-monospace, monospace; font-size: 12px; color: var(--muted); }
+  @media (max-width: 760px) {
+    #app { flex-direction: column; }
+    #map { flex: none; height: 62vh; }
+    #side { width: 100%; border-left: none; border-top: 1px solid var(--border); flex: 1; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="map"></div>
+  <aside id="side">
+    <h1>Зоны Петербурга</h1>
+    <p class="note">Границы зон проведены по улицам, рекам и набережным.
+      Наведите курсор на красную линию, чтобы увидеть название улицы, или нажмите на зону.</p>
+    <p class="note"><span class="line"></span>граница по улице / набережной<br>
+      <span class="line dash"></span>внешняя граница (ориентировочно)</p>
+
+    <label class="toggle"><input type="checkbox" id="tFill" checked> Заливка зон</label>
+    <label class="toggle"><input type="checkbox" id="tLabels" checked> Подписи зон</label>
+    <label class="toggle"><input type="checkbox" id="tOuter" checked> Внешние границы</label>
+
+    <h2>Зоны</h2>
+    <ul id="zoneList"></ul>
+
+    <h2>Границы</h2>
+    <ul id="borderList"></ul>
+
+    <h2>Координаты клика</h2>
+    <p class="note">Нажмите на карту — здесь появятся координаты точки (удобно, чтобы уточнить границу).</p>
+    <div id="coords">—</div>
+  </aside>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+// ---------------------------------------------------------------------------
+// Узловые точки, в которых сходятся несколько границ.
+// ---------------------------------------------------------------------------
+const P = {
+  NEVKA_MOUTH: [59.9810, 30.2230], // устье Большой Невки
+  KANT_BR:     [59.9800, 30.3190], // Кантемировский мост
+  KANT_SAMPS:  [59.9835, 30.3360], // Кантемировская ул. × Б. Сампсониевский пр.
+  NEVA_FORK:   [59.9535, 30.3420], // разделение Невы и Большой Невки
+  ADMIRALTY:   [59.9363, 30.3112], // Гороховая ул. × Адмиралтейский пр.
+  OBV_MOSK:    [59.9112, 30.3177], // Обводный канал × Московский пр.
+  OBV_WEST:    [59.9060, 30.2440], // устье Екатерингофки
+  OBV_EAST:    [59.9180, 30.4010], // впадение Обводного канала в Неву
+  NEP_PISK:    [59.9938, 30.4190], // пр. Непокорённых × Пискарёвский пр.
+  PISK_NEVA:   [59.9530, 30.4040], // Нева у начала Пискарёвского пр.
+  AN_BRIDGE:   [59.9255, 30.3990], // мост Александра Невского
+  DEVYATKINO:  [60.0505, 30.4425], // Девяткино
+  RYAB_EAST:   [59.9620, 30.5800], // Рябовское ш., восточный край
+  KAD_PULKOVO: [59.8170, 30.3220], // КАД × Пулковское ш.
+  OBUKH_BR:    [59.8550, 30.4930], // Большой Обуховский мост (КАД)
+  NOVOSAR:     [59.8420, 30.5330], // Нева у Новосаратовки
+  KAD_COAST:   [59.8600, 30.0950], // КАД у берега залива
+  NORTH_WEST:  [60.1400, 30.2480], // Выборгское ш. у Сертолово
+  OLGINO:      [59.9990, 30.1300]  // берег залива, Ольгино
+};
+
+// ---------------------------------------------------------------------------
+// Границы. Каждая — линия по конкретной улице / реке.
+// outer: true — внешняя граница с пригородом (проведена ориентировочно).
+// ---------------------------------------------------------------------------
+const BORDERS = {
+  nevka_w: {
+    name: "Большая Невка (Приморский пр. / Ушаковская наб.)",
+    between: ["1С", "Центр"],
+    pts: [P.NEVKA_MOUTH, [59.9850, 30.2450], [59.9870, 30.2650], [59.9860, 30.2850],
+          [59.9840, 30.2990], [59.9820, 30.3100], P.KANT_BR]
+  },
+  nevka_e: {
+    name: "Большая Невка (Петроградская / Пироговская наб.)",
+    between: ["Центр", "ПР-Ц"],
+    pts: [P.KANT_BR, [59.9740, 30.3240], [59.9680, 30.3290], [59.9625, 30.3340],
+          [59.9580, 30.3375], P.NEVA_FORK]
+  },
+  neva_center: {
+    name: "Нева (Троицкий — Дворцовый мост) → Дворцовый пр.",
+    between: ["Центр", "ПР-Ц"],
+    pts: [P.NEVA_FORK, [59.9500, 30.3330], [59.9485, 30.3275], [59.9455, 30.3200],
+          [59.9425, 30.3120], [59.9410, 30.3085], [59.9385, 30.3085], P.ADMIRALTY]
+  },
+  gorokhovaya: {
+    name: "ул. Гороховая → Сенная пл. → Московский пр.",
+    between: ["Центр", "ПР-Ц"],
+    pts: [P.ADMIRALTY, [59.9330, 30.3148], [59.9300, 30.3195], [59.9275, 30.3200],
+          [59.9240, 30.3192], [59.9222, 30.3190], [59.9165, 30.3185], P.OBV_MOSK]
+  },
+  obvodny_w: {
+    name: "Обводный канал → р. Екатерингофка",
+    between: ["Центр", "ЛЮ"],
+    pts: [P.OBV_WEST, [59.9068, 30.2520], [59.9055, 30.2650], [59.9060, 30.2760],
+          [59.9085, 30.2860], [59.9095, 30.2960], [59.9100, 30.3050], P.OBV_MOSK]
+  },
+  obvodny_e: {
+    name: "Обводный канал",
+    between: ["ПР-Ц", "ПЮ"],
+    pts: [P.OBV_MOSK, [59.9125, 30.3350], [59.9135, 30.3480], [59.9150, 30.3580],
+          [59.9170, 30.3720], [59.9178, 30.3850], P.OBV_EAST]
+  },
+  moskovsky: {
+    name: "Московский пр. → Пулковское ш.",
+    between: ["ЛЮ", "ПЮ"],
+    pts: [P.OBV_MOSK, [59.9063, 30.3175], [59.8918, 30.3176], [59.8790, 30.3189],
+          [59.8665, 30.3215], [59.8519, 30.3219], [59.8418, 30.3219], [59.8300, 30.3226],
+          P.KAD_PULKOVO]
+  },
+  kantemirovskaya: {
+    name: "Кантемировская ул.",
+    between: ["1С", "ПР-Ц"],
+    pts: [P.KANT_BR, [59.9815, 30.3270], P.KANT_SAMPS]
+  },
+  kushelevka: {
+    name: "Кантемировская ул. → Кушелевская дорога → пр. Непокорённых",
+    between: ["ЦС", "ПР-Ц"],
+    pts: [P.KANT_SAMPS, [59.9849, 30.3442], [59.9875, 30.3600], [59.9905, 30.3760],
+          [59.9925, 30.3880], [59.9935, 30.4040], P.NEP_PISK]
+  },
+  engelsa: {
+    name: "Б. Сампсониевский пр. → пр. Энгельса → Выборгское ш.",
+    between: ["1С", "ЦС"],
+    pts: [P.KANT_SAMPS, [59.9900, 30.3330], [60.0000, 30.3260], [60.0167, 30.3155],
+          [60.0270, 30.3190], [60.0372, 30.3214], [60.0515, 30.3325], [60.0650, 30.3290],
+          [60.0800, 30.3000], [60.1000, 30.2750], [60.1200, 30.2600], P.NORTH_WEST]
+  },
+  piskarevsky: {
+    name: "Пискарёвский пр.",
+    between: ["ПР-Ц", "Ручьи"],
+    pts: [P.NEP_PISK, [59.9850, 30.4175], [59.9750, 30.4150], [59.9660, 30.4115],
+          [59.9575, 30.4085], P.PISK_NEVA]
+  },
+  neva_okhta: {
+    name: "Нева (Смольный — мост Александра Невского)",
+    between: ["ПР-Ц", "Ручьи"],
+    pts: [P.PISK_NEVA, [59.9440, 30.4035], [59.9350, 30.4010], P.AN_BRIDGE]
+  },
+  neva_lavra: {
+    name: "Нева (у Александро-Невской лавры)",
+    between: ["ПР-Ц", "ПС"],
+    pts: [P.AN_BRIDGE, P.OBV_EAST]
+  },
+  railway: {
+    name: "ж/д линия Пискарёвка — Ручьи — Девяткино",
+    between: ["ЦС", "Ручьи"],
+    pts: [P.DEVYATKINO, [60.0320, 30.4330], [60.0060, 30.4280], P.NEP_PISK]
+  },
+  zanevsky: {
+    name: "Заневский пр. → пр. Косыгина → Рябовское ш.",
+    between: ["Ручьи", "ПС"],
+    pts: [P.AN_BRIDGE, [59.9270, 30.4060], [59.9295, 30.4200], [59.9315, 30.4320],
+          [59.9325, 30.4400], [59.9390, 30.4540], [59.9450, 30.4660], [59.9490, 30.4750],
+          [59.9530, 30.4950], [59.9565, 30.5200], [59.9600, 30.5500], P.RYAB_EAST]
+  },
+  neva_south: {
+    name: "Нева (Октябрьская наб. — Обуховский мост)",
+    between: ["ПЮ", "ПС"],
+    pts: [P.OBV_EAST, [59.9080, 30.4120], [59.8960, 30.4280], [59.8790, 30.4530],
+          [59.8660, 30.4700], P.OBUKH_BR]
+  },
+
+  // ---- внешние границы (с пригородами), ориентировочно ----
+  out_neva_novosar: {
+    name: "Нева до Новосаратовки", outer: true, between: ["ПС", "Правый пригород"],
+    pts: [P.OBUKH_BR, [59.8480, 30.5120], P.NOVOSAR]
+  },
+  out_kad_e: {
+    name: "КАД (Пулковское ш. — Обуховский мост)", outer: true, between: ["ПЮ", "Правый пригород"],
+    pts: [P.KAD_PULKOVO, [59.8150, 30.3600], [59.8180, 30.3950], [59.8300, 30.4300],
+          [59.8420, 30.4650], P.OBUKH_BR]
+  },
+  out_kad_w: {
+    name: "КАД (Пулковское ш. — берег залива)", outer: true, between: ["ЛЮ", "Левый пригород"],
+    pts: [P.KAD_PULKOVO, [59.8160, 30.2900], [59.8130, 30.2500], [59.8160, 30.2100],
+          [59.8250, 30.1700], [59.8380, 30.1300], [59.8500, 30.1050], P.KAD_COAST]
+  },
+  out_coast_s: {
+    name: "Берег Финского залива (юг)", outer: true, between: ["ЛЮ", "залив"],
+    pts: [P.KAD_COAST, [59.8570, 30.1400], [59.8550, 30.1700], [59.8620, 30.2000],
+          [59.8780, 30.2150], [59.8980, 30.2150], [59.9040, 30.2350], P.OBV_WEST]
+  },
+  out_coast_c: {
+    name: "Берег Финского залива (Васильевский о-в, Крестовский о-в)", outer: true, between: ["Центр", "залив"],
+    pts: [P.OBV_WEST, [59.9150, 30.2350], [59.9300, 30.2200], [59.9450, 30.2060],
+          [59.9600, 30.2100], [59.9720, 30.2120], P.NEVKA_MOUTH]
+  },
+  out_1s: {
+    name: "Берег залива (Лахта — Ольгино) и граница с Сев. пригородом", outer: true,
+    between: ["1С", "Северный пригород"],
+    pts: [P.NEVKA_MOUTH, [59.9890, 30.1900], P.OLGINO, [60.0350, 30.1500],
+          [60.0800, 30.1700], [60.1150, 30.1900], [60.1380, 30.2150], P.NORTH_WEST]
+  },
+  out_cs: {
+    name: "Граница с Сев. пригородом (Токсовское ш. — Кузьмоловский)", outer: true,
+    between: ["ЦС", "Северный пригород"],
+    pts: [P.NORTH_WEST, [60.1480, 30.2800], [60.1520, 30.3500], [60.1500, 30.4300],
+          [60.1350, 30.4950], [60.1100, 30.4900], [60.0850, 30.4740], [60.0650, 30.4560],
+          P.DEVYATKINO]
+  },
+  out_ruchyi: {
+    name: "Граница с пригородом (Девяткино — Всеволожск)", outer: true,
+    between: ["Ручьи", "пригород"],
+    pts: [P.DEVYATKINO, [60.0560, 30.5000], [60.0560, 30.5700], [60.0420, 30.6300],
+          [60.0250, 30.6750], [59.9950, 30.6650], [59.9700, 30.6200], P.RYAB_EAST]
+  },
+  out_ps: {
+    name: "Граница с Правым пригородом (Кудрово — Новосаратовка)", outer: true,
+    between: ["ПС", "Правый пригород"],
+    pts: [P.RYAB_EAST, [59.9350, 30.5900], [59.9050, 30.5800], [59.8750, 30.5650],
+          [59.8550, 30.5550], P.NOVOSAR]
+  }
+};
+
+// ---------------------------------------------------------------------------
+// Зоны: замкнутый контур собирается из границ (знак "-" — в обратную сторону).
+// ---------------------------------------------------------------------------
+const ZONES = [
+  { id: "1С",    color: "#3b82f6", at: [60.0450, 30.2300],
+    ring: ["nevka_w", "kantemirovskaya", "engelsa", "-out_1s"] },
+  { id: "ЦС",    color: "#10b981", at: [60.0650, 30.3850],
+    ring: ["kushelevka", "-railway", "-out_cs", "-engelsa"] },
+  { id: "Центр", color: "#f59e0b", at: [59.9480, 30.2650],
+    ring: ["nevka_w", "nevka_e", "neva_center", "gorokhovaya", "-obvodny_w", "out_coast_c"] },
+  { id: "ПР-Ц",  color: "#8b5cf6", at: [59.9560, 30.3720],
+    ring: ["nevka_e", "neva_center", "gorokhovaya", "obvodny_e", "-neva_lavra",
+           "-neva_okhta", "-piskarevsky", "-kushelevka", "-kantemirovskaya"] },
+  { id: "Ручьи", color: "#ec4899", at: [60.0050, 30.5250],
+    ring: ["piskarevsky", "neva_okhta", "zanevsky", "-out_ruchyi", "railway"] },
+  { id: "ПС",    color: "#06b6d4", at: [59.9050, 30.5050],
+    ring: ["neva_lavra", "neva_south", "out_neva_novosar", "-out_ps", "-zanevsky"] },
+  { id: "ПЮ",    color: "#ef4444", at: [59.8600, 30.3900],
+    ring: ["moskovsky", "out_kad_e", "-neva_south", "-obvodny_e"] },
+  { id: "ЛЮ",    color: "#84cc16", at: [59.8600, 30.2300],
+    ring: ["obvodny_w", "moskovsky", "out_kad_w", "out_coast_s"] }
+];
+
+const SUBURBS = [
+  { text: "Северный пригород ↑", at: [60.1750, 30.3600] },
+  { text: "← Левый пригород",   at: [59.7900, 30.1800] },
+  { text: "Правый пригород →",  at: [59.7950, 30.5000] }
+];
+
+// ---------------------------------------------------------------------------
+const map = L.map("map", { zoomControl: true }).setView([59.96, 30.36], 11);
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom: 19,
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+}).addTo(map);
+
+function buildRing(parts) {
+  const ring = [];
+  for (const part of parts) {
+    const rev = part.startsWith("-");
+    const b = BORDERS[rev ? part.slice(1) : part];
+    const pts = rev ? b.pts.slice().reverse() : b.pts;
+    pts.forEach((p, i) => { if (!(ring.length && i === 0)) ring.push(p); });
+  }
+  return ring;
+}
+
+const fillLayer = L.layerGroup().addTo(map);
+const labelLayer = L.layerGroup().addTo(map);
+const outerLayer = L.layerGroup().addTo(map);
+const innerLayer = L.layerGroup().addTo(map);
+
+const zoneLayers = {};
+const zoneList = document.getElementById("zoneList");
+for (const z of ZONES) {
+  const streets = z.ring.map(r => BORDERS[r.replace("-", "")])
+    .filter(b => !b.outer).map(b => "• " + b.name).join("<br>");
+  const poly = L.polygon(buildRing(z.ring), {
+    stroke: false, fillColor: z.color, fillOpacity: 0.18
+  }).bindPopup(`<b>Зона ${z.id}</b><br><br>Границы по улицам:<br>${streets}`);
+  poly.on("mouseover", () => poly.setStyle({ fillOpacity: 0.32 }));
+  poly.on("mouseout",  () => poly.setStyle({ fillOpacity: 0.18 }));
+  poly.addTo(fillLayer);
+  zoneLayers[z.id] = poly;
+
+  L.marker(z.at, { interactive: false, icon: L.divIcon({
+    className: "zlabel", html: z.id, iconSize: null, iconAnchor: [0, 0]
+  }) }).addTo(labelLayer);
+
+  const li = document.createElement("li");
+  li.className = "zone";
+  li.innerHTML = `<span class="sw" style="background:${z.color}"></span>${z.id}`;
+  li.onclick = () => { map.fitBounds(poly.getBounds(), { padding: [20, 20] }); poly.openPopup(); };
+  zoneList.appendChild(li);
+}
+
+for (const s of SUBURBS) {
+  L.marker(s.at, { interactive: false, icon: L.divIcon({
+    className: "slabel", html: s.text, iconSize: null
+  }) }).addTo(labelLayer);
+}
+
+const borderList = document.getElementById("borderList");
+for (const [key, b] of Object.entries(BORDERS)) {
+  const line = L.polyline(b.pts, {
+    color: "#e10600", weight: b.outer ? 3 : 5, opacity: 0.95,
+    dashArray: b.outer ? "8 7" : null, lineJoin: "round"
+  }).bindTooltip(`<b>${b.name}</b><br>${b.between.join(" | ")}`, { sticky: true });
+  line.on("mouseover", () => line.setStyle({ weight: b.outer ? 5 : 8 }));
+  line.on("mouseout",  () => line.setStyle({ weight: b.outer ? 3 : 5 }));
+  line.addTo(b.outer ? outerLayer : innerLayer);
+
+  if (!b.outer) {
+    const li = document.createElement("li");
+    li.className = "border";
+    li.innerHTML = `<span class="line"></span>${b.name}<br><span class="between">${b.between.join(" | ")}</span>`;
+    li.onclick = () => { map.fitBounds(line.getBounds(), { padding: [40, 40] }); line.openTooltip(); };
+    borderList.appendChild(li);
+  }
+}
+
+function toggle(id, layer) {
+  document.getElementById(id).addEventListener("change", e => {
+    e.target.checked ? layer.addTo(map) : map.removeLayer(layer);
+    innerLayer.bringToFront && innerLayer.eachLayer(l => l.bringToFront());
+  });
+}
+toggle("tFill", fillLayer);
+toggle("tLabels", labelLayer);
+toggle("tOuter", outerLayer);
+
+map.on("click", e => {
+  document.getElementById("coords").textContent =
+    e.latlng.lat.toFixed(5) + ", " + e.latlng.lng.toFixed(5);
+});
+</script>
+</body>
+</html>
